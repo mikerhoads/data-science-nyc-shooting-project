@@ -1,0 +1,217 @@
+---
+title: "NYPD Shooting Data Project"
+author: "M Rhoads"
+date: "2023-10-15"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r results='hide', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+```
+
+
+
+
+## Load and preview The Data
+Make sure you have the data file in the same directory as your RMD file and the working directory is set .
+Github Repo: https://github.com/mikerhoads/data-science-nyc-shooting-project
+
+```{r}
+nyc_shootings <- read.csv("NYPD_Shooting_Incident_Data__Historic_.csv", header=TRUE, stringsAsFactors=FALSE )
+
+nyc_shootings$DATE <- as.Date(nyc_shootings$OCCUR_DATE, format="%m/%d/%Y")
+
+
+#I am joining the date and time together
+nyc_shootings <- nyc_shootings %>%
+  unite("OCCUR_DATE_TIME",
+        c(OCCUR_DATE, OCCUR_TIME),
+        sep = "T",
+        na.rm = TRUE,
+        remove = FALSE) 
+
+
+#Convert the character date+time into and actual datetime object
+nyc_shootings$TIMESTAMP <- as.POSIXct(nyc_shootings$OCCUR_DATE_TIME, format = "%m/%d/%YT%H:%M:%S", tz = "America/New_York")
+nyc_shootings$MONTH <- month(nyc_shootings$TIMESTAMP, label = TRUE)
+
+#I thought it might be useful to have number of days in each month
+nyc_shootings$DAYS_IN_MONTH <- days_in_month(nyc_shootings$TIMESTAMP)
+
+shootings_by_month <- nyc_shootings %>%
+  group_by(MONTH) %>%
+  summarize (shootings = n(), murders  = sum(STATISTICAL_MURDER_FLAG == "true") ) %>%
+  mutate(lethality = round(murders/shootings, 2))
+
+glimpse(shootings_by_month)
+
+barplot(height = shootings_by_month$shootings, names.arg = shootings_by_month$MONTH, xlab = "MONTH", ylab = "Shootings", col="#69b3a2", main = "NYC, Shootings per Month")
+
+
+```
+
+
+
+
+## Go By Season 
+I decided to go with shootings by borough for my first visualization. 
+
+```{r season, echo=FALSE}
+
+nyc_shootings$DAY_OF_YEAR <- yday(nyc_shootings$TIMESTAMP)
+nyc_shootings$SEASON <- case_when(
+  nyc_shootings$DAY_OF_YEAR >= 80 & nyc_shootings$DAY_OF_YEAR < 172 ~ "Spring",  # March 21st to June 20th
+  nyc_shootings$DAY_OF_YEAR >= 172 & nyc_shootings$DAY_OF_YEAR < 266 ~ "Summer",  # June 21st to September 22nd
+  nyc_shootings$DAY_OF_YEAR >= 266 & nyc_shootings$DAY_OF_YEAR < 355 ~ "Autumn",  # September 23rd to December 20th
+  nyc_shootings$DAY_OF_YEAR >= 355 | nyc_shootings$DAY_OF_YEAR < 80 ~ "Winter"  # December 21st to March 20th
+)
+
+shootings_by_season <- nyc_shootings %>%
+  group_by(SEASON) %>%
+  summarize (shootings = n(), murders  = sum(STATISTICAL_MURDER_FLAG == "true") ) %>%
+  mutate(lethality = round(murders / shootings, 2))
+
+glimpse(shootings_by_season)
+
+barplot(height = shootings_by_season$shootings, names.arg = shootings_by_season$SEASON, xlab = "SEASON", ylab = "Shootings", col="#69b3a2", main = "NYC, Shootings per Season")
+
+barplot(height = shootings_by_season$lethality, names.arg = shootings_by_season$SEASON, xlab = "SEASON", ylab = "Lethality", col="#69b3a2", main = "NYC, Lethality by Season")
+
+
+
+```
+
+## Loading Weather Data
+I was able to find free historical weather data for NYC pretty easily. I grabbed this a file from the climate data store on noaa.gov (https://www.ncdc.noaa.gov/cdo-web/search)
+
+I loaded this into R and converted the date field on both tables to a date type. I then joined them on the date column. The combined table will now show me the high temperature on the day that each shooting occurred.
+
+```{r weather_data, echo=FALSE}
+nyc_weather <- read.csv("NYC_DAILY_WEATHER.csv", header=TRUE, stringsAsFactors=FALSE )
+nyc_weather$DATE <- as_date(nyc_weather$DATE, format="%Y-%m-%d")
+#nyc_weather <- nyc_weather %>% select(one_of(c("DATE", "TMAX")))
+#nyc_weather <- nyc_weather %>% rename(HIGH_TEMPERATURE = TMAX)
+
+
+shootings_by_day <- nyc_shootings %>%
+  group_by(DATE) %>%
+  summarize (shootings = n(), murders  = sum(STATISTICAL_MURDER_FLAG == "true") )
+
+weather_shootings  <- merge(shootings_by_day, nyc_weather, on = "DATE", all = TRUE)
+weather_shootings <- weather_shootings[!is.na(weather_shootings$shootings), ]
+
+glimpse(weather_shootings)
+
+
+```
+
+## Min, Max, Average Temperatures
+I decided to go with shootings by borough for my first visualization. 
+
+```{r temperature, echo=FALSE}
+
+
+
+
+#MAX TEMP
+max_temp_shootings <- weather_shootings %>%
+  group_by(TMAX) %>%
+  summarize(shootings = sum(shootings), murders= sum(murders), days = n()) %>%
+  mutate(shootings_per_day = round(shootings / days,1),
+         murders_per_day = round(murders / days,1),
+         lethality = round(murders / shootings, 2))
+max_temp_shootings <- max_temp_shootings %>% filter(days > 7)
+glimpse(max_temp_shootings)
+barplot(height = max_temp_shootings$shootings_per_day,
+        names.arg = max_temp_shootings$TMAX,
+        xlab = "High Temperature",
+        ylab = "Shootings per Day",
+        col="#69b3a2",
+        main = "NYC, Shootings per High Temp")
+
+
+# Fit the linear regression model
+mod <- lm(shootings_per_day ~ TMAX, data = max_temp_shootings)
+summary(mod)
+# Generate predictions using the model
+max_temp_shootings_w_pred <- max_temp_shootings %>% mutate(pred = predict(mod, newdata = .))
+
+# Create a scatter plot to visualize the results
+max_temp_shootings_w_pred %>% ggplot() + 
+  xlab("High Temperature") + 
+  ylab("Shootings per Day") + 
+  geom_point(aes(x = TMAX, y = shootings_per_day), color = "blue") +
+  geom_line(aes(x = TMAX, y = pred), color = "red")
+
+
+
+
+#MIN TEMP
+min_temp_shootings <- weather_shootings %>%
+  group_by(TMIN) %>%
+  summarize(shootings = sum(shootings), murders= sum(murders), days = n()) %>%
+  mutate(shootings_per_day = round(shootings / days,1),
+         murders_per_day = round(murders / days,1),
+         lethality = round(murders / shootings, 2))
+min_temp_shootings <- min_temp_shootings %>% filter(days > 7)
+glimpse(max_temp_shootings)
+barplot(height = min_temp_shootings$shootings_per_day,
+        names.arg = min_temp_shootings$TMIN,
+        xlab = "Min Temperature",
+        ylab = "Shootings per Day",
+        col="#69b3a2",
+        main = "NYC, Shootings per Low Temp")
+
+
+# Fit the linear regression model
+mod <- lm(shootings_per_day ~ TMIN, data = min_temp_shootings)
+summary(mod)
+# Generate predictions using the model
+min_temp_shootings_w_pred <- min_temp_shootings %>% mutate(pred = predict(mod, newdata = .))
+
+# Create a scatter plot to visualize the results
+min_temp_shootings_w_pred %>% ggplot(xlab="Low Temperature", ylab="Shootings per Day") + 
+  geom_point(aes(x = TMIN, y = shootings_per_day), color = "blue") +
+  geom_line(aes(x = TMIN, y = pred), color = "red")
+
+
+
+```
+
+
+## Full Moon
+Data Source = https://astropixels.com/ephemeris/phasescat/phases2001.html
+
+```{r full_moon, echo=FALSE}
+
+full_moon_days <- data.frame(date = c("2006-01-14", "2006-02-13", "2006-03-14", "2006-04-13", "2006-05-13", "2006-06-11", "2006-07-11", "2006-08-09", "2006-09-07", "2006-10-07", "2006-11-05", "2006-12-05", "2007-01-03", "2007-02-02", "2007-03-03", "2007-04-02", "2007-05-02", "2007-06-01", "2007-06-30", "2007-07-30", "2007-08-28", "2007-09-26", "2007-10-26", "2007-11-24", "2007-12-24", "2008-01-22", "2008-02-21", "2008-03-21", "2008-04-20", "2008-05-20", "2008-06-18", "2008-07-18", "2008-08-16", "2008-09-15", "2008-10-14", "2008-11-13", "2008-12-12", "2009-01-11", "2009-02-09", "2009-03-11", "2009-04-09", "2009-05-09", "2009-06-07", "2009-07-07", "2009-08-06", "2009-09-04", "2009-10-04", "2009-11-02", "2009-12-02", "2009-12-31", "2010-01-30", "2010-02-28", "2010-03-30", "2010-04-28", "2010-05-27", "2010-06-26", "2010-07-26", "2010-08-24", "2010-09-23", "2010-10-23", "2010-11-21", "2010-12-21", "2011-01-19", "2011-02-18", "2011-03-19", "2011-04-18", "2011-05-17", "2011-06-15", "2011-07-15", "2011-08-13", "2011-09-12", "2011-10-12", "2011-11-10", "2011-12-10", "2012-01-09", "2012-02-07", "2012-03-08", "2012-04-06", "2012-05-06", "2012-06-04", "2012-07-03", "2012-08-02", "2012-08-31", "2012-09-30", "2012-10-29", "2012-11-28", "2012-12-28", "2013-01-27", "2013-02-25", "2013-03-27", "2013-04-25", "2013-05-25", "2013-06-23", "2013-07-22", "2013-08-21", "2013-09-19", "2013-10-18", "2013-11-17", "2013-12-17", "2014-01-16", "2014-02-14", "2014-03-16", "2014-04-15", "2014-05-14", "2014-06-13", "2014-07-12", "2014-08-10", "2014-09-09", "2014-10-08", "2014-11-06", "2014-12-06", "2015-01-05", "2015-02-03", "2015-03-05", "2015-04-04", "2015-05-04", "2015-06-02", "2015-07-02", "2015-07-31", "2015-08-29", "2015-09-28", "2015-10-27", "2015-11-25", "2015-12-25", "2016-01-24", "2016-02-22", "2016-03-23", "2016-04-22", "2016-05-21", "2016-06-20", "2016-07-19", "2016-08-18", "2016-09-16", "2016-10-16", "2016-11-14", "2016-12-14", "2017-01-12", "2017-02-11", "2017-03-12", "2017-04-11", "2017-05-10", "2017-06-09", "2017-07-09", "2017-08-07", "2017-09-06", "2017-10-05", "2017-11-04", "2017-12-03", "2018-01-02", "2018-01-31", "2018-03-02", "2018-03-31", "2018-04-30", "2018-05-29", "2018-06-28", "2018-07-27", "2018-08-26", "2018-09-25", "2018-10-24", "2018-11-23", "2018-12-22", "2019-01-21", "2019-02-19", "2019-03-21", "2019-04-19", "2019-05-18", "2019-06-17", "2019-07-16", "2019-08-15", "2019-09-14", "2019-10-13", "2019-11-12", "2019-12-12", "2020-01-10", "2020-02-09", "2020-03-09", "2020-04-08", "2020-05-07", "2020-06-05", "2020-07-05", "2020-08-03", "2020-09-02", "2020-10-01", "2020-10-31", "2020-11-30", "2020-12-30", "2021-01-28", "2021-02-27", "2021-03-28", "2021-04-27", "2021-05-26", "2021-06-24", "2021-07-24", "2021-08-22", "2021-09-20", "2021-10-20", "2021-11-19", "2021-12-19"))
+
+
+shootings_by_day <- shootings_by_day %>%
+  mutate(is_full_moon  = DATE %in% as.Date(full_moon_days$date, format="%Y-%m-%d"))
+
+full_moon_shootings <- shootings_by_day %>%
+  group_by(is_full_moon) %>%
+  summarize (days = n(), shootings  = sum(shootings) ) %>%
+  mutate(shootings_per_day = round(shootings/days, 1))
+
+barplot(height = full_moon_shootings$shootings_per_day,
+        #names.arg = full_moon_shootings$is_full_moon,
+        names.arg=c("Not Full", "Full Moon"),
+        xlab = "Was There a Full Moon?",
+        ylab = "Shootings per Day",
+        col="#69b3a2",
+        main = "NYC, Shootings vs Full Moon State")
+
+
+
+
+```
+
+
